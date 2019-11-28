@@ -8,12 +8,12 @@ import utils
 import time
 from data import SubDataset, ExemplarDataset
 from continual_learner import ContinualLearner
-
-
+from excitability_modules import LinearExcitability
+import evaluate
 
 def train_cl(model, train_datasets, replay_mode="none", scenario="class",classes_per_task=None,iters=2000,batch_size=32,
              generator=None, gen_iters=0, gen_loss_cbs=list(), loss_cbs=list(), eval_cbs=list(), sample_cbs=list(),
-             use_exemplars=True, add_exemplars=False, eval_cbs_exemplars=list()):
+             use_exemplars=True, add_exemplars=False, eval_cbs_exemplars=list(), sparsity=0., x_tasks=5, test_datasets=None):
     '''Train a model (with a "train_a_batch" method) on multiple tasks, with replay-strategy specified by [replay_mode].
 
     [model]             <nn.Module> main model to optimize across all tasks
@@ -291,6 +291,96 @@ def train_cl(model, train_datasets, replay_mode="none", scenario="class",classes
         progress.close()
         if generator is not None:
             progress_gen.close()
+
+        ######
+        if test_datasets:
+            print("\n\n--> Evaluation ({}-incremental learning scenario: Before pruning):".format(scenario))
+            # Evaluate precision of final model on full test-set
+            precs = [evaluate.validate(
+                model, test_datasets[i], verbose=False, test_size=None, task=i+1, with_exemplars=False,
+                allowed_classes=list(range(classes_per_task*i, classes_per_task*(i+1))) if scenario=="task" else None
+            ) for i in range(x_tasks)]
+            print("\n Precision on test-set (softmax classification):")
+            for i in range(x_tasks):
+                print(" - Task {}: {:.4f}".format(i + 1, precs[i]))
+            average_precs = sum(precs) / x_tasks
+            print('=> average precision over all {} tasks: {:.4f}'.format(x_tasks, average_precs))
+
+            # -with exemplars
+            if use_exemplars:
+                precs = [evaluate.validate(
+                    model, test_datasets[i], verbose=False, test_size=None, task=i+1, with_exemplars=True,
+                    allowed_classes=list(range(classes_per_task*i, classes_per_task*(i+1))) if scenario=="task" else None
+                ) for i in range(x_tasks)]
+                print("\n Precision on test-set (classification using exemplars):")
+                for i in range(x_tasks):
+                    print(" - Task {}: {:.4f}".format(i + 1, precs[i]))
+                average_precs_ex = sum(precs) / x_tasks
+                print('=> average precision over all {} tasks: {:.4f}'.format(x_tasks, average_precs_ex))
+            print("\n")
+
+        # -------------------------------------------------------------
+            #pruning
+            total = 0
+            for m in model.modules():
+                if isinstance(m, LinearExcitability):
+                    print("module")
+                    print(m)
+                    total += m.weight.data.numel()
+            x_weights = torch.zeros(total)
+            index = 0
+            for m in model.modules():
+                if isinstance(m, LinearExcitability):
+                    size = m.weight.data.numel()
+                    x_weights[index:(index+size)] = m.weight.data.view(-1).abs().clone()
+                    index += size
+
+            y, i = torch.sort(x_weights)
+            thre_index = int(total * sparsity)
+            thre = y[thre_index]
+            pruned = 0
+            print('Pruning threshold: {}'.format(thre))
+            zero_flag = False
+            for k, m in enumerate(model.modules()):
+                if isinstance(m, LinearExcitability):
+                    weight_copy = m.weight.data.abs().clone()
+                    mask = weight_copy.gt(thre).float()
+                    pruned = pruned + mask.numel() - torch.sum(mask)
+                    m.weight.data.mul_(mask)
+                    if int(torch.sum(mask)) == 0:
+                        zero_flag = True
+                    print('layer index: {:d} \t total params: {:d} \t remaining params: {:d}'.
+                        format(k, mask.numel(), int(torch.sum(mask))))
+            print('Total conv params: {}, Pruned conv params: {}, Pruned ratio: {}'.format(total, pruned, pruned/total))
+        # -------------------------------------------------------------
+
+            print("\n\n--> Evaluation ({}-incremental learning scenario: After pruning):".format(scenario))
+
+            # Evaluate precision of final model on full test-set
+            precs = [evaluate.validate(
+                model, test_datasets[i], verbose=False, test_size=None, task=i+1, with_exemplars=False,
+                allowed_classes=list(range(classes_per_task*i, classes_per_task*(i+1))) if scenario=="task" else None
+            ) for i in range(x_tasks)]
+            print("\n Precision on test-set (softmax classification):")
+            for i in range(x_tasks):
+                print(" - Task {}: {:.4f}".format(i + 1, precs[i]))
+            average_precs = sum(precs) / x_tasks
+            print('=> average precision over all {} tasks: {:.4f}'.format(x_tasks, average_precs))
+
+            # -with exemplars
+            if use_exemplars:
+                precs = [evaluate.validate(
+                    model, test_datasets[i], verbose=False, test_size=None, task=i+1, with_exemplars=True,
+                    allowed_classes=list(range(classes_per_task*i, classes_per_task*(i+1))) if scenario=="task" else None
+                ) for i in range(x_tasks)]
+                print("\n Precision on test-set (classification using exemplars):")
+                for i in range(x_tasks):
+                    print(" - Task {}: {:.4f}".format(i + 1, precs[i]))
+                average_precs_ex = sum(precs) / x_tasks
+                print('=> average precision over all {} tasks: {:.4f}'.format(x_tasks, average_precs_ex))
+            print("\n")
+
+        ######
 
         # EWC: estimate Fisher Information matrix (FIM) and update term for quadratic penalty
         if isinstance(model, ContinualLearner) and (model.ewc_lambda>0):
