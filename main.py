@@ -86,6 +86,7 @@ cl_params.add_argument('--si', action='store_true', help="use 'Synaptic Intellig
 cl_params.add_argument('--c', type=float, default=0.1, dest="si_c", help="--> SI: regularisation strength")
 cl_params.add_argument('--epsilon', type=float, default=0.1, dest="epsilon", help="--> SI: dampening parameter")
 cl_params.add_argument('--xdg', type=float, default=0., dest="gating_prop",help="XdG: prop neurons per layer to gate")
+cl_params.add_argument('--sparsity', type=float, default=0., dest="sparsity",help="Pruning percentage")
 
 # exemplar parameters
 icarl_params = parser.add_argument_group('Exemplar Parameters')
@@ -405,6 +406,7 @@ def run(args):
         generator=generator, gen_iters=args.g_iters, gen_loss_cbs=generator_loss_cbs,
         sample_cbs=sample_cbs, eval_cbs=eval_cbs, loss_cbs=generator_loss_cbs if args.feedback else solver_loss_cbs,
         eval_cbs_exemplars=eval_cbs_exemplars, use_exemplars=args.use_exemplars, add_exemplars=args.add_exemplars,
+        sparsity=args.sparsity, x_tasks=args.tasks, test_datasets=test_datasets
     )
     # Get total training-time in seconds, and write to file
     training_time = time.time() - start
